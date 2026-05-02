@@ -1,0 +1,6 @@
+nlp_env/
+data/*.csv
+models/*.pkl
+__pycache__/
+.ipynb_checkpoints/
+Group10_Project_Submission.zip
