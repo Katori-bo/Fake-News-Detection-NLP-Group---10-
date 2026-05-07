@@ -98,12 +98,10 @@ plt.suptitle('Sensationalism Signals: Real vs Fake News', fontsize=16)
 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 plt.show()
 
-# ── KAGGLE ONLY DATA ──
 df.to_csv('../data/kaggle_only.csv', index=False)
-
 print("Kaggle base dataset saved → kaggle_only.csv")
-print("Do NOT rerun this after running NB2")
-print("Updated labeled_data.csv with sensationalism features.")
+print("NOTE: Sensationalism features here are for EDA only.")
+print("NB2 will recompute them for ALL rows (Kaggle + LIAR) after merge.")
 
 
 # In[7]:
@@ -246,17 +244,170 @@ print(combined_df['source'].value_counts())
 # In[7]:
 
 
-kaggle_df['source'] = 'kaggle'
-liar_df['source']   = 'liar'
+import re
+import string
 
-combined_df = pd.concat([kaggle_df, liar_df], ignore_index=True)
-combined_df = combined_df.sample(frac=1, random_state=42).reset_index(drop=True)
+def sensationalism_features(text):
+    text = str(text)
+    words = text.split()
+    return pd.Series({
+        'exclamation_count': text.count('!'),
+        'question_count':    text.count('?'),
+        'caps_ratio':        sum(1 for w in words if w.isupper() and len(w) > 2)
+                             / max(len(words), 1),
+        'punct_ratio':       sum(1 for c in text if c in string.punctuation)
+                             / (len(text) + 1),
+        'repeated_punct':    len(re.findall(r'([!?])\1+', text)),
+        'text_length':       len(text),
+        'word_count':        len(words)
+    })
 
-print("Combined shape:", combined_df.shape)
+combined_df[['exclamation_count', 'question_count', 'caps_ratio',
+             'punct_ratio', 'repeated_punct', 'text_length', 'word_count']] = \
+    combined_df['text'].apply(sensationalism_features)
+
+print("Sensationalism features added to ALL rows.")
+print(combined_df[['exclamation_count','question_count',
+                   'caps_ratio','punct_ratio','text_length','word_count']].isnull().sum())
+print("\nDataset counts:")
 print(combined_df['source'].value_counts())
+print("\nFake/Real per source:")
+print(pd.crosstab(combined_df['source'], combined_df['label']))
 
 
 # In[8]:
+
+
+# ── Verify sensationalism features across both sources ──
+print(combined_df.groupby('source')[
+    ['exclamation_count', 'question_count', 'caps_ratio', 'punct_ratio']
+].mean().round(4))
+
+# Visual check
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+sns.boxplot(x='label', y='exclamation_count', data=combined_df,
+            palette='Set2', ax=axes[0])
+axes[0].set_xticklabels(['Real', 'Fake'])
+axes[0].set_title('Exclamation Count: Real vs Fake')
+
+sns.boxplot(x='source', y='caps_ratio', data=combined_df,
+            palette='Set1', ax=axes[1])
+axes[1].set_title('Caps Ratio: Kaggle vs LIAR')
+
+plt.tight_layout()
+plt.show()
+
+
+# In[9]:
+
+
+# ── Sensationalism Evidence: Fake vs Real ──
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+print("=== Average Sensationalism: Fake vs Real ===\n")
+print(combined_df.groupby('label')[
+    ['exclamation_count', 'question_count', 'caps_ratio', 'punct_ratio', 'repeated_punct']
+].mean().round(4).rename(index={0: 'Real', 1: 'Fake'}).to_string())
+
+# ── Visualization ──
+fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+axes = axes.flatten()
+
+features = [
+    ('exclamation_count', 'Exclamation Marks (!)'),
+    ('question_count',    'Question Marks (?)'),
+    ('caps_ratio',        'ALL CAPS Word Ratio'),
+    ('punct_ratio',       'Punctuation Ratio'),
+    ('repeated_punct',    'Repeated Punctuation (!! / ??)'),
+]
+
+colors = ['#e74c3c', '#2ecc71']   # red = fake, green = real
+
+for ax, (col, title) in zip(axes, features):
+    means = combined_df.groupby('label')[col].mean()
+    bars  = ax.bar(['Real', 'Fake'], [means[0], means[1]], color=colors, width=0.5, edgecolor='black')
+    for bar, val in zip(bars, [means[0], means[1]]):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + bar.get_height() * 0.02,
+                f'{val:.4f}', ha='center', fontsize=11, fontweight='bold')
+    ax.set_title(title, fontsize=12, fontweight='bold')
+    ax.set_ylabel('Average Value')
+    ax.set_ylim(0, max(means[0], means[1]) * 1.3)
+
+# hide the unused 6th subplot
+axes[5].set_visible(False)
+
+plt.suptitle('Fake News is More Sensationalised Than Real News',
+             fontsize=15, fontweight='bold', y=1.01)
+plt.tight_layout()
+plt.savefig('../data/sensationalism_evidence.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+# ── Statistical confirmation ──
+from scipy.stats import mannwhitneyu
+
+print("\n=== Statistical Significance (Mann-Whitney U Test) ===\n")
+for col in ['exclamation_count', 'question_count', 'caps_ratio', 'punct_ratio', 'repeated_punct']:
+    fake_vals = combined_df[combined_df['label'] == 1][col].dropna()
+    real_vals = combined_df[combined_df['label'] == 0][col].dropna()
+    stat, p = mannwhitneyu(fake_vals, real_vals, alternative='greater')
+    sig = "✓ SIGNIFICANT" if p < 0.05 else "✗ not significant"
+    print(f"{col:<22} | p = {p:.4f} | {sig}")
+
+
+# In[23]:
+
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Ensure label is consistent
+combined_df['label'] = combined_df['label'].astype(int)
+
+plt.figure(figsize=(8, 6))
+
+sens_cols = [
+    'exclamation_count',
+    'question_count',
+    'caps_ratio',
+    'punct_ratio',
+    'repeated_punct'
+]
+
+# Compute means
+label_means = combined_df.groupby('label')[sens_cols].mean().T
+label_means.columns = ['Real', 'Fake']
+
+# Normalize row-wise (so each feature is comparable)
+label_means_norm = label_means.div(label_means.max(axis=1), axis=0)
+
+# Plot heatmap
+sns.heatmap(
+    label_means_norm,
+    annot=label_means.round(3),  # show actual values
+    fmt='.3f',
+    cmap='RdYlGn_r',
+    linewidths=0.5,
+    cbar_kws={'label': 'Normalised Score'}
+)
+
+plt.title('Sensationalism Heatmap (Fake vs Real)', fontsize=12)
+plt.yticks(
+    rotation=0
+)
+
+plt.tight_layout()
+plt.savefig('../data/sensationalism_heatmap.png', dpi=150, bbox_inches='tight')
+plt.show()
+
+print("Chart saved → ../data/sensationalism_heatmap.png")
+
+
+# In[24]:
 
 
 lemmatizer = WordNetLemmatizer()
@@ -277,7 +428,7 @@ def clean_text(text):
     return ' '.join(tokens)
 
 
-# In[9]:
+# In[25]:
 
 
 combined_df['content'] = combined_df['title'] + ' ' + combined_df['text']
@@ -286,7 +437,7 @@ combined_df['content_clean'] = combined_df['content'].apply(clean_text)
 print(combined_df['content_clean'].iloc[0])
 
 
-# In[10]:
+# In[26]:
 
 
 from textblob import TextBlob
@@ -305,7 +456,7 @@ print("New features added:", ['sentiment','subjectivity','flesch_score','avg_wor
 print(combined_df[['sentiment','subjectivity','flesch_score','avg_word_len']].describe())
 
 
-# In[11]:
+# In[27]:
 
 
 X = combined_df['content_clean']
@@ -318,7 +469,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 print("Train:", len(X_train), "Test:", len(X_test))
 
 
-# In[12]:
+# In[28]:
 
 
 tfidf = TfidfVectorizer(max_features=15000, ngram_range=(1,3),
@@ -331,11 +482,11 @@ X_test_tfidf  = tfidf.transform(X_test)
 print("TF-IDF shape:", X_train_tfidf.shape)
 
 
-# In[13]:
+# In[29]:
 
 
 feature_cols = ['exclamation_count', 'question_count', 'caps_ratio',
-                'punct_ratio', 'text_length', 'word_count',
+                'punct_ratio', 'repeated_punct', 'text_length', 'word_count',
                 'sentiment', 'subjectivity', 'flesch_score', 'avg_word_len']
 
 extra_train = csr_matrix(combined_df.loc[X_train.index, feature_cols].values)
@@ -347,7 +498,7 @@ X_test_final  = hstack([X_test_tfidf,  extra_test])
 print("Final shape:", X_train_final.shape)
 
 
-# In[14]:
+# In[30]:
 
 
 with open('../models/X_train_tfidf.pkl', 'wb') as f:
@@ -374,7 +525,7 @@ with open('../models/tfidf_vectorizer.pkl', 'wb') as f:
 print("All files saved.")
 
 
-# In[15]:
+# In[31]:
 
 
 combined_df.to_csv('../data/labeled_data.csv', index=False)
@@ -382,17 +533,11 @@ combined_df.to_csv('../data/labeled_data.csv', index=False)
 print("Final combined dataset saved → labeled_data.csv")
 
 
-# In[16]:
+# In[32]:
 
 
 get_ipython().system('pip install textblob textstat --break-system-packages')
 get_ipython().system('python -m textblob.download_corpora')
-
-
-# In[ ]:
-
-
-
 
 #!/usr/bin/env python
 # coding: utf-8
@@ -400,7 +545,6 @@ get_ipython().system('python -m textblob.download_corpora')
 # In[1]:
 
 
-# ── CELL 1: Imports ──────────────────────────────────────────
 import pandas as pd
 import pickle
 import numpy as np
@@ -427,9 +571,6 @@ print("Imports done.")
 # In[2]:
 
 
-# ── CELL 2: Load saved features ──────────────────────────────
-
-
 with open('../models/y_train.pkl', 'rb') as f:
     y_train = pickle.load(f)
 with open('../models/y_test.pkl', 'rb') as f:
@@ -447,14 +588,12 @@ print(f"y_train      : {y_train.shape}")
 print(f"X_train_tfidf: {X_train_tfidf.shape}")
 print(f"X_train_hybrid: {X_train_hybrid.shape}")
 
-# Sanity check — train + test should equal full dataset size
 print(f"\nTrain + Test = {len(y_train) + len(y_test)} rows (should be 57689)")
 
 
 # In[3]:
 
 
-# ── CELL 3: Fix NaN values in hybrid sparse matrix ───────────
 def clean_sparse(X):
     if sparse.issparse(X):
         X = X.copy()
@@ -470,15 +609,11 @@ print("NaN values cleaned from hybrid matrices.")
 # In[4]:
 
 
-# ── CELL 4: Sample weights (FIXED — use .loc not .iloc) ──────
-
 df_meta = pd.read_csv('../data/labeled_data.csv')
 
-train_meta = df_meta.loc[y_train.index]   # CORRECT: label-based
+train_meta = df_meta.loc[y_train.index]   
 sample_weights = train_meta['source'].map({'kaggle': 1.0, 'liar': 1.2}).values
-#  Reason: LIAR statements are ~15 words; Kaggle articles are ~400 words.
-#  Over-weighting short statements was pulling the TF-IDF distribution
-#  toward short-text patterns and hurting generalisation.
+
 
 print(f"Sample weights shape: {sample_weights.shape}")
 print(f"Unique weights: {np.unique(sample_weights)}")
@@ -487,8 +622,6 @@ print(f"Unique weights: {np.unique(sample_weights)}")
 
 # In[5]:
 
-
-# ── CELL 5: Logistic Regression (tuned) ──────────────────────
 
 start = time.time()
 
@@ -503,17 +636,12 @@ lr_auc = roc_auc_score(y_test, lr_proba)
 lr_time = time.time() - start
 
 print(f"LR  | Acc: {lr_acc:.4f} | AUC: {lr_auc:.4f} | Time: {lr_time:.1f}s")
-# Expected: Acc ~0.93-0.94  (was 0.9062)
 
 
 
 # In[6]:
 
 
-# ── CELL 6: Naive Bayes (tuned) ──────────────────────────────
-# Key change: alpha=0.1 (was default 1.0)
-# Lower alpha = less smoothing = stronger word signals
-# MultinomialNB needs non-negative features — TF-IDF with sublinear_tf is fine
 start = time.time()
 
 nb = MultinomialNB(alpha=0.5)
@@ -526,18 +654,11 @@ nb_auc = roc_auc_score(y_test, nb_proba)
 nb_time = time.time() - start
 
 print(f"NB  | Acc: {nb_acc:.4f} | AUC: {nb_auc:.4f} | Time: {nb_time:.1f}s")
-# Expected: Acc ~0.91-0.92  (was 0.8771)
 
 
 # In[7]:
 
 
-# ── CELL 7: Random Forest (tuned) ────────────────────────────
-# Key changes vs original:
-#   max_features='sqrt'  — standard best practice for RF, prevents overfitting
-#   n_estimators=300     — reduced from 500 (diminishing returns above 300)
-#   min_samples_leaf=1   — was 2, let leaves be pure for text classification
-# Using HYBRID features (TF-IDF + sensationalism signals)
 start = time.time()
 
 rf = RandomForestClassifier(
@@ -558,19 +679,12 @@ rf_auc = roc_auc_score(y_test, rf_proba)
 rf_time = time.time() - start
 
 print(f"RF  | Acc: {rf_acc:.4f} | AUC: {rf_auc:.4f} | Time: {rf_time:.1f}s")
-# Expected: Acc ~0.93-0.94  (was 0.9124)
 
 
 
-# In[8]:
+# In[ ]:
 
 
-# ── CELL 8: MLP (tuned) ──────────────────────────────────────
-# Key changes vs original:
-#   Scaled input with MaxAbsScaler — MLP is sensitive to feature scale
-#   adam solver with lower learning_rate_init — more stable convergence
-#   dropout via alpha (L2 regularization) increased slightly
-# MLP on sparse matrix: MaxAbsScaler preserves sparsity
 from sklearn.preprocessing import MaxAbsScaler
 
 scaler = MaxAbsScaler()
@@ -582,15 +696,15 @@ mlp = MLPClassifier(
     hidden_layer_sizes=(256, 128),
     activation='relu',
     solver='adam',
-    alpha=0.001,               # L2 reg (was default 0.0001)
+    alpha=0.001,               #
     learning_rate_init=0.001,
     max_iter=200,
     early_stopping=True,
     validation_fraction=0.1,
-    n_iter_no_change=15,       # was 10 — give it more patience
+    n_iter_no_change=15,       
     random_state=42
 )
-mlp.fit(X_train_scaled, y_train)  # MLP doesn't support sample_weight in all versions
+mlp.fit(X_train_scaled, y_train) 
 mlp_preds = mlp.predict(X_test_scaled)
 mlp_proba = mlp.predict_proba(X_test_scaled)[:, 1]
 
@@ -602,19 +716,8 @@ print(f"MLP | Acc: {mlp_acc:.4f} | AUC: {mlp_auc:.4f} | Time: {mlp_time:.1f}s")
 
 
 
-# In[9]:
+# In[ ]:
 
-
-# ── CELL 9: Voting Ensemble (replaces XGBoost) ───────────────
-# Why Voting Ensemble instead of XGBoost?
-#   1. XGBoost on 10k-feature dense matrix needs ~8GB RAM — risky
-#   2. Voting combines LR + NB + RF — all already trained, zero extra cost
-#   3. Soft voting averages probabilities — outperforms any single model
-#   4. Stays within project scope (all three suggested model types contribute)
-#
-# We build a fresh VotingClassifier that retrains each estimator internally.
-# This avoids the sparse/dense mismatch between LR(tfidf) and RF(hybrid).
-# Both use TF-IDF here for a clean ensemble on identical feature space.
 
 from sklearn.ensemble import StackingClassifier
 
@@ -634,7 +737,7 @@ ensemble = StackingClassifier(
     passthrough=False,
     n_jobs=-1
 )
-ensemble.fit(X_train_tfidf, y_train)   # StackingClassifier handles CV internally, no sample_weight here
+ensemble.fit(X_train_tfidf, y_train)   
 ens_preds = ensemble.predict(X_test_tfidf)
 ens_proba = ensemble.predict_proba(X_test_tfidf)[:, 1]
 
@@ -643,14 +746,13 @@ ens_auc = roc_auc_score(y_test, ens_proba)
 ens_time = time.time() - start
 
 print(f"ENS | Acc: {ens_acc:.4f} | AUC: {ens_auc:.4f} | Time: {ens_time:.1f}s")
-# Expected: 0.94–0.96
 
 
 
-# In[10]:
+
+# In[ ]:
 
 
-# ── CELL 10: Results summary ──────────────────────────────────
 results = {
     'Logistic Regression': {'acc': lr_acc,  'auc': lr_auc,  'preds': lr_preds,  'proba': lr_proba},
     'Naive Bayes':          {'acc': nb_acc,  'auc': nb_auc,  'preds': nb_preds,  'proba': nb_proba},
@@ -682,10 +784,9 @@ plt.show()
 
 
 
-# In[11]:
+# In[ ]:
 
 
-# ── CELL 11: ROC curve comparison ─────────────────────────────
 eval_map = {
     'Logistic Regression': (X_test_tfidf, lr_proba),
     'Naive Bayes':          (X_test_tfidf, nb_proba),
@@ -711,10 +812,9 @@ plt.show()
 
 
 
-# In[12]:
+# In[ ]:
 
 
-# ── CELL 12: Best model — classification report + confusion matrix ──
 best_name = summary_df.index[0]
 best = results[best_name]
 best_preds = best['preds']
@@ -735,11 +835,9 @@ plt.show()
 
 
 
-# In[13]:
+# In[ ]:
 
 
-# ── CELL 13: Save all models ──────────────────────────────────
-# Save individual models
 with open('../models/lr_model.pkl', 'wb') as f:
     pickle.dump(lr, f)
 with open('../models/nb_model.pkl', 'wb') as f:
@@ -753,11 +851,9 @@ with open('../models/ensemble_model.pkl', 'wb') as f:
 with open('../models/scaler.pkl', 'wb') as f:
     pickle.dump(scaler, f)
 
-# Save best model (for NB4 to load)
 with open('../models/best_model.pkl', 'wb') as f:
-    pickle.dump(results[best_name], f)  # saves full results dict entry
+    pickle.dump(results[best_name], f)  
 
-# IMPORTANT: Also save just the sklearn model object for NB4 compatibility
 import pickle
 best_sklearn_model = ensemble if best_name == 'Voting Ensemble' else \
                      lr if best_name == 'Logistic Regression' else \
@@ -770,12 +866,6 @@ with open('../models/best_model_tfidf.pkl', 'wb') as f:
 print(f"All models saved.")
 print(f"Best model '{best_name}' saved as best_model_tfidf.pkl")
 print(f"\nNote for NB4: Best model uses {'tfidf' if best_name != 'Random Forest' else 'hybrid'} features.")
-
-
-
-# In[ ]:
-
-
 
 
 #!/usr/bin/env python
@@ -837,7 +927,6 @@ with open('../models/y_test.pkl', 'rb') as f:
 with open('../models/tfidf_vectorizer.pkl', 'rb') as f:
     tfidf = pickle.load(f)
 
-# Auto-detect which feature matrix the best model needs
 if hasattr(model, 'n_features_in_') and model.n_features_in_ > 15000:
     with open('../models/X_test_final.pkl', 'rb') as f:
         X_test = pickle.load(f)
@@ -847,7 +936,6 @@ else:
         X_test = pickle.load(f)
     print("Loaded TF-IDF X_test")
 
-# Clean NaN values
 from scipy.sparse import issparse
 if issparse(X_test):
     X_test = X_test.copy()
@@ -868,7 +956,6 @@ print("Index alignment check: PASSED")
 # In[3]:
 
 
-# ── CELL 3: Predictions and overall metrics ───────────────────
 preds = model.predict(X_test)
 proba = model.predict_proba(X_test)[:, 1]
 
@@ -897,7 +984,6 @@ plt.show()
 # In[4]:
 
 
-# ── CELL 4: Performance by source dataset ─────────────────────
 test_df = df.loc[y_test.index].copy()
 test_df['predicted'] = preds
 test_df['actual']    = y_test.values
@@ -930,7 +1016,6 @@ plt.show()
 # In[5]:
 
 
-# ── CELL 5: Confusion matrices per source ─────────────────────
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
 cm_k = confusion_matrix(kaggle_test['actual'], kaggle_test['predicted'])
@@ -956,7 +1041,6 @@ plt.show()
 # In[6]:
 
 
-# ── CELL 6: Per-source classification reports ─────────────────
 print("=== Kaggle Subset ===")
 print(classification_report(kaggle_test['actual'], kaggle_test['predicted'],
                              target_names=['Real', 'Fake']))
@@ -971,7 +1055,6 @@ print(classification_report(liar_test['actual'], liar_test['predicted'],
 # In[7]:
 
 
-# ── CELL 7: Error analysis ─────────────────────────────────────
 errors = test_df[test_df['predicted'] != test_df['actual']]
 fp = errors[errors['predicted'] == 1]   # Real called Fake
 fn = errors[errors['predicted'] == 0]   # Fake called Real
@@ -992,12 +1075,11 @@ print(fn[['title', 'source', 'subject']].head(5).to_string(index=False))
 # In[8]:
 
 
-# ── CELL 8: Feature importance (RF only — skip for Ensemble) ──
 try:
-    # If best model is Voting Ensemble, pull RF from inside
+
     if hasattr(model, 'estimators_'):
         rf_inside = dict(model.estimators)['rf'] if hasattr(model, 'estimators') else None
-        # Try named_estimators_ (sklearn attribute)
+
         if hasattr(model, 'named_estimators_'):
             rf_inside = model.named_estimators_.get('rf', None)
         importances_series = None
@@ -1029,7 +1111,6 @@ try:
         print("(VotingClassifier hides internal estimator importances)")
         print("Showing LR coefficients instead...")
 
-        # For LR inside ensemble
         if hasattr(model, 'named_estimators_'):
             lr_inside = model.named_estimators_.get('lr', None)
             if lr_inside is not None:
@@ -1051,7 +1132,6 @@ except Exception as e:
 # In[9]:
 
 
-# ── CELL 9: Word frequency analysis ───────────────────────────
 fake_words = ' '.join(df[df['label'] == 1]['content_clean'].dropna()).split()
 real_words = ' '.join(df[df['label'] == 0]['content_clean'].dropna()).split()
 
@@ -1071,7 +1151,6 @@ plt.show()
 # In[10]:
 
 
-# ── CELL 10: Word clouds ───────────────────────────────────────
 fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
 wc_fake = WordCloud(width=700, height=400, background_color='black',
@@ -1095,7 +1174,6 @@ plt.show()
 # In[11]:
 
 
-# ── CELL 11: Final summary table ──────────────────────────────
 summary = pd.DataFrame({
     'Metric': ['Accuracy', 'AUC Score', 'Total Test Samples',
                'False Positives', 'False Negatives', 'Error Rate'],
@@ -1127,7 +1205,6 @@ def predict_news(title, body=""):
     combined = clean_text(title + " " + body)
     vectorized = tfidf.transform([combined])
 
-    # If model expects hybrid features, pad with zeros for handcrafted cols
     if hasattr(model, 'n_features_in_') and model.n_features_in_ > vectorized.shape[1]:
         n_extra = model.n_features_in_ - vectorized.shape[1]
         padding = csr_matrix(np.zeros((1, n_extra)))
@@ -1157,7 +1234,6 @@ def predict_news(title, body=""):
 # In[13]:
 
 
-# Test with full articles
 print("=== Prediction Tests ===\n")
 
 predict_news(
@@ -1184,7 +1260,6 @@ predict_news(
     over 18 months. The treatment may enter phase three trials pending FDA approval."""
 )
 
-# Headline-only (to show why confidence drops)
 print("\n--- Headline-only (confidence will be lower) ---\n")
 predict_news("NASA confirms moon is made of cheese after secret mission")
 predict_news("Supreme Court rules on landmark immigration case")
@@ -1252,11 +1327,11 @@ print(summary_df.to_string(index=False))
 
 # In[17]:
 
+
 import matplotlib.pyplot as plt
 
-# Keeping the name 'models_compared' to avoid NameError
 models_compared = {
-    'Random Forest': 0.9122,
+    'Random Forest': 0.9097,
     'MLP Neural Net': 0.9097,
     'Voting Ensemble': 0.9087,
     'Logistic Regression': 0.9086,
@@ -1268,18 +1343,18 @@ bars = plt.bar(models_compared.keys(), models_compared.values(), color='steelblu
 
 # Dynamic Y-axis limits based on your new data
 min_acc = min(models_compared.values())
-plt.ylim(min_acc - 0.02, 0.95)
+plt.ylim(min_acc - 0.02, 0.95) 
 
 plt.ylabel('Accuracy')
 plt.title('Model Performance Comparison (Group 10)')
 
 # Logic for adding labels on top of the bars
 for bar, val in zip(bars, models_compared.values()):
-    plt.text(bar.get_x() + bar.get_width()/2,
+    plt.text(bar.get_x() + bar.get_width()/2, 
              bar.get_height() + 0.001,
-             f'{val*100:.2f}%',
-             ha='center',
-             fontsize=11,
+             f'{val*100:.2f}%', 
+             ha='center', 
+             fontsize=11, 
              fontweight='bold')
 
 plt.tight_layout()
@@ -1289,17 +1364,22 @@ plt.show()
 # In[18]:
 
 
-# Check what the vectorizer actually sees for a "real" headline
 test = "Federal Reserve raises interest rates by 0.25 percent"
 cleaned = clean_text(test)
 print(f"Cleaned: '{cleaned}'")
 
-# Check what a real article looks like after cleaning
 sample_real = df[df['label']==0]['content_clean'].iloc[0]
 print(f"\nSample real article start: '{sample_real[:200]}'")
 
 sample_fake = df[df['label']==1]['content_clean'].iloc[0]
 print(f"\nSample fake article start: '{sample_fake[:200]}'")
+
+
+# In[19]:
+
+
+import sys
+print(sys.executable)
 
 
 # In[ ]:
